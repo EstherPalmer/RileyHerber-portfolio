@@ -1,0 +1,306 @@
+# Model Fitting Exercise
+
+This report explores the Mavoglurant pharmacokinetic dataset.
+The goal is to clean the data, perform exploratory data analysis,
+and fit predictive models using the tidymodels framework.
+
+```{r}
+library(nlmixr2data)
+library(ggplot2)
+library(dplyr)
+library(tidyverse)
+library(tidymodels)
+
+mavoglurant <- read.csv("../fitting-exercise/Mavoglurant_A2121_nmpk.csv")
+```
+
+# Data Exploration
+
+```{r}
+ggplot(mavoglurant, aes(x = TIME, y = DV, group = ID, color = factor(DOSE))) +
+  geom_line(alpha = 0.6) +
+  geom_point(size = 1) +
+  labs(
+    title = "DV Over Time by Dose",
+    x = "Time",
+    y = "DV",
+    color = "Dose"
+  ) +
+  theme_minimal()
+```
+
+We remove observations where OCC = 2 because individuals received the drug more than once and we restrict the analysis to the first occasion.
+```{r}
+mavoglurant_occ1 <- mavoglurant %>%
+  filter(OCC == 1)
+
+ggplot(mavoglurant_occ1,
+       aes(x = TIME,
+           y = DV,
+           group = ID,
+           color = factor(DOSE))) +
+  geom_line(alpha = 0.6) +
+  geom_point(size = 1) +
+  labs(
+    title = "DV Over Time by Dose (OCC = 1)",
+    x = "Time",
+    y = "DV",
+    color = "Dose"
+  ) +
+  theme_minimal()
+```
+
+# Data Cleaning
+
+We compute total drug exposure (Y) by summing DV values for each individual after removing TIME = 0.
+```{r}
+# Exclude TIME == 0 and compute sum of DV per individual
+dv_sum <- mavoglurant %>%
+  filter(OCC == 1, TIME != 0) %>%
+  group_by(ID) %>%
+  summarize(Y = sum(DV, na.rm = TRUE)) %>%
+  ungroup()
+
+# Check dimensions
+dim(dv_sum)
+
+dose_data <- mavoglurant %>%
+  filter(OCC == 1, TIME == 0)
+
+dim(dose_data)
+
+final_data <- dose_data %>%
+  left_join(dv_sum, by = "ID")
+
+dim(final_data)
+```
+
+We convert categorical variables to factors and keep only the relevant predictors and outcome.
+```{r}
+clean_data <- final_data %>%
+  mutate(
+    RACE = factor(RACE),
+    SEX  = factor(SEX)
+  ) %>%
+  select(Y, DOSE, AGE, SEX, RACE, WT, HT)
+
+str(clean_data)
+dim(clean_data)
+```
+
+# EDA
+
+We begin by examining general summary statistics to understand the scale and variability of the variables.
+```{r}
+summary(clean_data)
+
+clean_data %>%
+  summarise(
+    n = n(),
+    mean_Y = mean(Y),
+    sd_Y   = sd(Y),
+    min_Y  = min(Y),
+    max_Y  = max(Y)
+  )
+```
+
+## By Dose:
+Since dose is expected to strongly affect total drug exposure, we compute summary statistics of Y stratified by DOSE.
+```{r}
+clean_data %>%
+  group_by(DOSE) %>%
+  summarise(
+    n = n(),
+    mean_Y = mean(Y),
+    sd_Y = sd(Y),
+    median_Y = median(Y)
+  )
+```
+
+Total drug exposure (Y) increases with dose, indicating a strong dose–exposure relationship.
+
+
+## By Sex:
+
+```{r}
+clean_data %>%
+  group_by(SEX) %>%
+  summarise(
+    n = n(),
+    mean_Y = mean(Y),
+    sd_Y = sd(Y)
+  )
+```
+
+Total drug exposure (Y) appears somewhat higher on average in individuals coded as sex = 1 compared to sex = 2
+
+
+## Y vs. Age
+
+```{r}
+ggplot(clean_data, aes(x = AGE, y = Y)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = FALSE) +
+  theme_minimal() +
+  labs(title = "Total Drug (Y) vs Age")
+```
+
+The scatterplot of total drug exposure (Y) versus age shows substantial variability across all ages, with no strong visible linear trend.
+
+
+## Y vs. Dose
+
+```{r}
+ggplot(clean_data, aes(x = factor(DOSE), y = Y)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Total Drug by Dose", x = "Dose")
+```
+
+Total drug exposure (Y) increased with Dose, which would be expected. 
+
+
+## Y vs. Sex
+```{r}
+ggplot(clean_data, aes(x = SEX, y = Y)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Total Drug by Sex")
+```
+
+The boxplot comparing total drug exposure (Y) across sex groups shows that individuals coded as sex = 1 have a slightly higher median exposure than those coded as sex = 2.
+
+
+## Distribution of Y
+
+```{r}
+ggplot(clean_data, aes(x = Y)) +
+  geom_histogram(bins = 20) +
+  theme_minimal() +
+  labs(title = "Distribution of Total Drug (Y)")
+```
+
+Distribution of Y seems to be right skewed.
+
+
+## Correlation Plots
+
+```{r}
+numeric_vars <- clean_data %>%
+  select(Y, AGE, WT, HT)
+
+cor(numeric_vars)
+
+pairs(numeric_vars)
+```
+
+The outcome variable Y shows only weak correlations with demographic variables, suggesting that dose may be the primary driver of exposure rather than age, weight, or height.
+
+Weight and height are strongly positively correlated (r = 0.599), which reflects expected physiological relationships. Age is moderately negatively correlated with height, indicating that older individuals tend to be shorter in this dataset. Overall, no strong unexpected relationships were observed.
+
+# Modeling
+
+## Linear regression models predicting Y using Dose only:
+
+```{r}
+lm_spec <- linear_reg() %>% set_engine("lm")
+
+recipe_dose <- recipe(Y ~ DOSE, data = clean_data)
+
+workflow_dose <- workflow() %>%
+  add_recipe(recipe_dose) %>%
+  add_model(lm_spec)
+
+fit_dose <- fit(workflow_dose, data = clean_data)
+
+pred_dose <- predict(fit_dose, clean_data) %>%
+  bind_cols(clean_data)
+
+metrics(pred_dose, truth = Y, estimate = .pred)
+```
+
+## Linear regression models predicting Y using all predictors:
+
+```{r}
+recipe_all <- recipe(Y ~ ., data = clean_data)
+
+workflow_all <- workflow() %>%
+  add_recipe(recipe_all) %>%
+  add_model(lm_spec)
+
+fit_all <- fit(workflow_all, data = clean_data)
+
+pred_all <- predict(fit_all, clean_data) %>%
+  bind_cols(clean_data)
+
+metrics(pred_all, truth = Y, estimate = .pred)
+```
+
+The regression analysis shows that dose is the primary determinant of total drug exposure (Y). A linear model using dose alone explained approximately 52% of the variability in exposure (R-squared = 0.516), with an RMSE of 666 and MAE of 517, indicating moderate prediction error. When all predictors (dose, age, sex, race, weight, and height) were included, model performance improved modestly (R-squared = 0.619, RMSE = 591, MAE = 444). This suggests that demographic variables contribute some additional explanatory value, but dose remains the dominant driver of exposure.
+
+Relationships between Y and other predictors such as age, sex, weight, and height were comparatively weak and showed substantial overlap across groups.
+
+
+
+## We now treat SEX as the outcome and fit logistic regression models.
+
+Split the data into a training set and a test set.
+```{r}
+set.seed(123)
+
+data_split <- initial_split(clean_data, prop = 0.8, strata = SEX)
+
+train_data <- training(data_split)
+test_data  <- testing(data_split)
+```
+
+## SEX ~ DOSE
+```{r}
+log_spec <- logistic_reg() %>%
+  set_engine("glm")
+
+recipe_sex_dose <- recipe(SEX ~ DOSE, data = train_data)
+
+workflow_sex_dose <- workflow() %>%
+  add_recipe(recipe_sex_dose) %>%
+  add_model(log_spec)
+
+fit_sex_dose <- fit(workflow_sex_dose, data = train_data)
+```
+
+
+```{r}
+pred_sex_dose <- predict(fit_sex_dose, test_data, type = "prob") %>%
+  bind_cols(predict(fit_sex_dose, test_data)) %>%
+  bind_cols(test_data)
+
+accuracy(pred_sex_dose, truth = SEX, estimate = .pred_class)
+
+roc_auc(pred_sex_dose, truth = SEX, .pred_2)
+```
+
+## SEX ~ All Predictors
+
+```{r}
+recipe_sex_all <- recipe(SEX ~ ., data = train_data)
+
+workflow_sex_all <- workflow() %>%
+  add_recipe(recipe_sex_all) %>%
+  add_model(log_spec)
+
+fit_sex_all <- fit(workflow_sex_all, data = train_data)
+```
+
+```{r}
+pred_sex_all <- predict(fit_sex_all, test_data, type = "prob") %>%
+  bind_cols(predict(fit_sex_all, test_data)) %>%
+  bind_cols(test_data)
+
+accuracy(pred_sex_all, truth = SEX, estimate = .pred_class)
+
+roc_auc(pred_sex_all, truth = SEX, .pred_2)
+```
+
+Logistic regression models were then used to predict sex from dose alone and from all available predictors. Although accuracy appeared high in some cases, ROC–AUC values were near 0.5, indicating that the models had little true discriminatory ability and largely reflected class imbalance rather than meaningful prediction.
+
+Overall, the analysis demonstrates that dose strongly determines drug exposure in this dataset, demographic variables play a comparatively minor role, and sex cannot be reliably predicted from this dataset.
