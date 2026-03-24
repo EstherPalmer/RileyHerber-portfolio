@@ -11,7 +11,7 @@ library(dplyr)
 library(tidyverse)
 library(tidymodels)
 
-mavoglurant <- read.csv("../fitting-exercise/Mavoglurant_A2121_nmpk.csv")
+mavoglurant <- read.csv("fitting-exercise/Mavoglurant_A2121_nmpk.csv")
 ```
 
 # Data Exploration
@@ -304,3 +304,123 @@ roc_auc(pred_sex_all, truth = SEX, .pred_2)
 Logistic regression models were then used to predict sex from dose alone and from all available predictors. Although accuracy appeared high in some cases, ROC–AUC values were near 0.5, indicating that the models had little true discriminatory ability and largely reflected class imbalance rather than meaningful prediction.
 
 Overall, the analysis demonstrates that dose strongly determines drug exposure in this dataset, demographic variables play a comparatively minor role, and sex cannot be reliably predicted from this dataset.
+
+# Module 10 Exercise
+
+```{r}
+rngseed = 1234
+set.seed(rngseed)
+```
+
+
+```{r}
+clean_data2 <- subset(clean_data, select = -RACE)
+```
+
+```{r}
+data_split <- initial_split(clean_data)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+```
+
+## Model 1 - uses only DOSE as a predictor.
+```{r}
+lm_model1 <- linear_reg() %>%
+  set_engine("lm")
+
+recipe1 <- recipe(Y ~ DOSE, data = train_data)
+
+workflow1 <- workflow() %>%
+  add_model(lm_model1) %>%
+  add_recipe(recipe1)
+
+fit_model1 <- workflow1 %>%
+  fit(data = train_data)
+```
+
+## Model 2 - uses all predictors.
+
+```{r}
+lm_model2 <- linear_reg() %>%
+  set_engine("lm")
+
+recipe2 <- recipe(Y ~ DOSE + AGE + SEX + WT + HT, data = train_data)
+
+workflow2 <- workflow() %>%
+  add_model(lm_model2) %>%
+  add_recipe(recipe2)
+
+fit_model2 <- workflow2 %>%
+  fit(data = train_data)
+```
+
+## Model performance assessment 1
+## RMSE for Training Data
+
+Model 1
+```{r}
+pred1 <- predict(fit_model1, train_data) %>%
+  bind_cols(train_data)
+
+rmse_model1 <- rmse(pred1, truth = Y, estimate = .pred)
+rmse_model1
+```
+
+Model 2
+
+```{r}
+pred2 <- predict(fit_model2, train_data) %>%
+  bind_cols(train_data)
+
+rmse_model2 <- rmse(pred2, truth = Y, estimate = .pred)
+rmse_model2
+```
+
+Null Model RMSE
+
+```{r}
+mean_y <- mean(train_data$Y)
+
+null_pred <- train_data %>%
+  mutate(.pred = mean_y)
+
+rmse_null <- rmse(null_pred, truth = Y, estimate = .pred)
+rmse_null
+```
+
+## Model performance assessment 2
+
+```{r}
+set.seed(1234)
+```
+
+```{r}
+folds <- vfold_cv(train_data, v = 10)
+```
+
+Cross-Validate Model 1
+
+```{r}
+cv_model1 <- fit_resamples(
+  workflow1,
+  resamples = folds,
+  metrics = metric_set(rmse)
+)
+
+collect_metrics(cv_model1)
+```
+
+Cross-Validate Model 2
+
+```{r}
+cv_model2 <- fit_resamples(
+  workflow2,
+  resamples = folds,
+  metrics = metric_set(rmse)
+)
+
+collect_metrics(cv_model2)
+```
+
+## What changed?
+We see that the RMSE values increased slightly for both models. Previously, Model 1 had a training RMSE of approximately 702, and Model 2 had about 627; after cross-validation, Model 1’s mean RMSE rose to 691 and Model 2’s to 646. This change is expected because cross-validation evaluates each model on subsets of data that were not used for fitting, giving a more realistic estimate of performance on unseen data. What did not change is the overall pattern of model performance: Model 2 still performs best, followed by Model 1, while both continue to outperform the null model.
